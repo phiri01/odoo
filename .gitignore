@@ -50,3 +50,6 @@ package.json
 /man/
 /share/
 /src/
+
+# Banyan Memory Bank
+memory-bank/.local/
