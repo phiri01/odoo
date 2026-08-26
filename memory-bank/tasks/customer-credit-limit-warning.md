@@ -2,13 +2,13 @@
 slug: customer-credit-limit-warning
 legacy_id:
 feature: customer-credit-limit-warning
-status: INITIALIZED
+status: PLANNING_COMPLETE
 ---
 
 # customer-credit-limit-warning: Customer Credit Limit Warning
 
 **Complexity**: Level 2
-**Status**: INITIALIZED
+**Status**: PLANNING_COMPLETE
 **Roadmap**: customer-credit-limit-warning
 **Branch**: feature/customer-credit-limit-warning
 **Worktree**: N/A
@@ -17,49 +17,153 @@ status: INITIALIZED
 
 Add a customer credit limit warning to the Sale Order form. The warning is a computed text message that appears as a banner when a customer is approaching or exceeding their credit limit. Yellow at 80% of limit, red over 100%. The message includes the credit limit, current outstanding receivables, and how much this order would add. Empty (no banner) when the customer has no credit limit set or is well within limit.
 
-## User Journey Definition
+## Specification
 
-**Feature Type**: [End-User Feature | NFR/Infrastructure]
-**Creative Phase Required**: [Yes - Type | No]
+**Feature Type**: End-User Feature
+**Primary Persona**: End User — Sales rep / accountant (productBrief.md § Key Personas: "sales rep / accountant / HR staff / warehouse worker" using the respective business app day-to-day; here specifically the Sales app quotation flow)
+**Creative Exploration Needed**: No — see "Design decisions made" under Scope Boundaries for judgment calls resolved here since Level 2 has no creative phase
 
-### Invocation Method (End-User Features)
-- **Location**: [exact page/screen/component]
-- **Element**: [exact button/link/command]
-- **Visibility**: [always visible | conditional]
-- **Navigation**: [steps from entry to feature]
+### Invocation Method
 
-### Success Criteria (End-User Features)
-- **User sees**: [exact message/screen/feedback]
-- **User can verify at**: [exact location]
-- **Data persisted**: [what and where]
-- **Observable within**: [timeframe]
+**Existing core mechanism (read before implementing):** Odoo core (stock, unmodified in this fork) already ships ~80% of this feature. **Do not build from scratch — extend via `_inherit`.**
 
-### NFR Verification (Infrastructure Features)
-- **Test method**: [exact command/tool]
-- **Success metrics**: [specific thresholds]
-- **Observable at**: [dashboard/log location]
+- `res.company.account_use_credit_limit` (Boolean, `addons/account/models/company.py:154`) — global on/off toggle, set via Settings > Invoicing > "Sales Credit Limit". Must be `True` for any warning to show.
+- `res.partner.credit_limit` (Float, company_dependent, `addons/account/models/partner.py:524-527`) — per-partner credit limit. Falsy (0/unset) means "no limit set."
+- `res.partner.credit` (Monetary, computed, `addons/account/models/partner.py:517-519`) — total already-invoiced receivable ("Total Receivable").
+- `res.partner.credit_to_invoice` (Monetary, computed, `addons/account/models/partner.py:520-523`, extended in `addons/sale/models/res_partner.py:80-107`) — confirmed-but-not-yet-invoiced sale order amounts.
+- `sale.order.partner_credit_warning` (Text, computed, `addons/sale/models/sale_order.py:299-300`) — the existing banner field, computed by `_compute_partner_credit_warning` (`addons/sale/models/sale_order.py:770-781`), gated on `order.state in ('draft', 'sent')` and `company_id.account_use_credit_limit`.
+- `account.move._build_credit_warning_message` (`addons/account/models/account_move.py:1846-1889`) — shared helper the sale order compute delegates to. Computes `total_credit = partner.credit + partner.credit_to_invoice(- exclude_amount) + current_amount`; returns `''` if `not credit_limit or total_credit <= credit_limit` (i.e., **only fires strictly over 100%**, single message combining everything into one "Total amount due" line — no separate breakdown of outstanding vs. this order).
+- View: `addons/sale/views/sale_order_views.xml:301-305` — a single `<div class="alert alert-warning" invisible="partner_credit_warning == ''">` right under the form `<header>`. Always yellow; never red; never shown at 80%.
+
+**Gaps this task must fill** (the actual scope of work): (1) an "approaching" 80% yellow tier that core does not have at all, (2) a red/danger tier at >100% (core only ever renders `alert-warning`), (3) a message that explicitly breaks out credit limit / current outstanding receivables / this order's addition as three distinct figures (core combines them into one total). `partner_credit_warning` is purely informational — grep confirms it is never used to block `action_confirm` or raise a `UserError` anywhere in `sale`/`account`, so this remains a non-blocking banner, matching the task description.
+
+**New module:**
+- **Recommended approach**: new addon `addons/sale_credit_limit_warning/` (per systemPatterns.md "Extend, don't modify" — `_inherit`, manifest `depends: ['sale', 'account']`). Do not edit `addons/sale/*` directly.
+- **Confidence**: HIGH — this is a standard Odoo extension pattern with a directly analogous precedent already in core (`addons/sale/models/res_partner.py:80-82` extends `account`'s `_compute_credit_to_invoice` via `# EXTENDS 'account'` + `super()`).
+- Files:
+  - `addons/sale_credit_limit_warning/__manifest__.py` — `depends: ['sale', 'account']`
+  - `addons/sale_credit_limit_warning/__init__.py` → imports `models`
+  - `addons/sale_credit_limit_warning/models/__init__.py` → imports `sale_order`
+  - `addons/sale_credit_limit_warning/models/sale_order.py` — `_inherit = 'sale.order'`:
+    - New field `credit_limit_warning_level = fields.Selection([('warning', 'Warning'), ('danger', 'Danger')], compute='_compute_partner_credit_warning', store=False)` (no `'none'` option needed — a falsy/empty value naturally hides both banner divs).
+    - Override `_compute_partner_credit_warning` (same method name as `addons/sale/models/sale_order.py:771`, calling `super()` first per the `# EXTENDS 'sale'` convention, then overwriting `order.partner_credit_warning` and setting `order.credit_limit_warning_level`) with the threshold/message logic below.
+    - Must call `order.sudo()` when reading `partner_id.credit` / `credit_to_invoice` / `credit_limit`, matching the existing core comment at `sale_order.py:779` ("ensure access to `credit` & `credit_limit` fields") — these fields are restricted to `account.group_account_invoice,account.group_account_readonly` and a plain sales user would otherwise silently get blank/inaccessible values.
+  - `addons/sale_credit_limit_warning/views/sale_order_views.xml` — inherits `sale.view_order_form`, xpaths the existing single alert div (`sale_order_views.xml:301-305`) to `replace` with two divs bound to the new `credit_limit_warning_level` field (see below).
+
+**Threshold & message logic (concrete — resolves the task's "yellow at 80% / red over 100%" spec):** For each order (scoped to `state in ('draft', 'sent')`, matching the existing core gate — see Scope Boundaries):
+
+```
+outstanding      = partner.credit + partner.credit_to_invoice          # already-invoiced + confirmed-not-invoiced
+this_order_amount = order.amount_total / order.currency_rate           # converted to company currency, same pattern as core sale_order.py:780
+total_exposure   = outstanding + this_order_amount
+limit            = partner.credit_limit
+
+if not limit:
+    level = False            # no banner — "no credit limit set"
+elif total_exposure > limit:
+    level = 'danger'         # red — over 100%
+elif total_exposure >= 0.8 * limit:
+    level = 'warning'        # yellow — 80%-100% inclusive
+else:
+    level = False            # no banner — well within limit
+```
+
+Message (both tiers use the same three-figure breakdown, only the lead sentence differs):
+- Warning: `"{partner} is approaching its credit limit of {limit}. Current outstanding receivables: {outstanding}. This order would add: {this_order_amount}."`
+- Danger: `"{partner} has exceeded its credit limit of {limit}. Current outstanding receivables: {outstanding}. This order would add: {this_order_amount}."`
+
+All monetary figures formatted via `formatLang` in the company currency, matching the existing core message's formatting convention (`account_move.py:1869,1871`).
+
+**Confidence: MEDIUM** on the exact boundary (80% inclusive → warning; >100% → danger) and exact copy — these are concrete decisions made here (no creative phase exists at Level 2), but are easy to tweak at build time without restructuring.
+
+**Concrete invocation details:**
+- **Location**: Sale Order form view, immediately under the `<header>` statusbar — same position as the existing core banner (`addons/sale/views/sale_order_views.xml:301-305`), which this feature's view inherits and replaces via xpath.
+- **Element**: Two `<div class="alert ...">` banners (not a button/command — a passive computed banner):
+  - `<div class="alert alert-warning" role="alert" invisible="credit_limit_warning_level != 'warning'"><field name="partner_credit_warning"/></div>`
+  - `<div class="alert alert-danger" role="alert" invisible="credit_limit_warning_level != 'danger'"><field name="partner_credit_warning"/></div>`
+- **Visibility**: Conditional — visible only when `credit_limit_warning_level` is `'warning'` or `'danger'`; both hidden (empty banner) when the field is falsy (no credit limit set, or well within limit).
+- **Navigation**: None required — the banner appears automatically as soon as a Sale Order (state `draft` or `sent`) has a `partner_id` set; no click/menu path needed. From app entry: Sales app → Quotations → open/create an order → select a customer.
+- **Confidence**: HIGH — exact location, field names, and xpath target are confirmed in the codebase (`addons/sale/views/sale_order_views.xml:301-305`).
+
+### Success Criteria
+- **User sees**: A yellow (`alert-warning`) or red (`alert-danger`) banner directly below the Sale Order form's status bar, containing the customer name, credit limit, current outstanding receivables, and this order's contribution — or no banner at all when not applicable.
+- **Verifiable at**: The Sale Order form view (`sale.view_order_form`), on any order in `draft` or `sent` state with a partner set.
+- **Data persisted**: None — `partner_credit_warning` and `credit_limit_warning_level` are non-stored computed fields (`store=False`), recomputed on the fly from `res.partner` credit fields and `order.amount_total`, exactly like the existing core field. Nothing new is written to the database.
+- **Observable within**: Immediate — recomputes synchronously via the ORM's compute/onchange mechanism whenever `partner_id`, `company_id`, or order lines (hence `amount_total`) change, same as the existing core field's `@api.depends`.
 
 ### Acceptance Criteria
-- AC-ENTRY-1: [user can find the feature]
-- AC-HAPPY-1: [user completes primary journey]
-- AC-ERROR-1: [error handling]
+
+#### AC-ENTRY-1: Banner appears automatically without extra navigation
+**Priority**: MUST
+**Given** a user has opened or is creating a Sale Order (state `draft` or `sent`)
+**When** they set a `partner_id` whose commercial partner has a `credit_limit` set and whose exposure is at or above 80% of that limit
+**Then** the appropriate banner (yellow or red) is visible immediately below the status bar, with no additional click, menu, or navigation required to reveal it
+
+#### AC-HAPPY-1: Yellow warning banner at 80%-100% of credit limit
+**Priority**: MUST
+**Given** a customer whose `credit_limit` is set and whose `outstanding + this_order_amount` falls between 80% (inclusive) and 100% (inclusive) of `credit_limit`
+**When** the Sale Order form is viewed
+**Then** the `alert-warning` (yellow) banner is shown, `credit_limit_warning_level == 'warning'`, and the message text states the credit limit, current outstanding receivables, and this order's added amount
+
+#### AC-HAPPY-2: Red danger banner above 100% of credit limit
+**Priority**: MUST
+**Given** a customer whose `credit_limit` is set and whose `outstanding + this_order_amount` exceeds `credit_limit`
+**When** the Sale Order form is viewed
+**Then** the `alert-danger` (red) banner is shown, `credit_limit_warning_level == 'danger'`, and the message text states the credit limit, current outstanding receivables, and this order's added amount
+
+#### AC-HAPPY-3: No banner when no limit set or well within limit
+**Priority**: MUST
+**Given** either (a) the customer's `credit_limit` is 0/unset, or (b) it is set but `outstanding + this_order_amount` is below 80% of `credit_limit`, or (c) `company_id.account_use_credit_limit` is disabled, or (d) the order is not in `draft`/`sent` state
+**When** the Sale Order form is viewed
+**Then** neither banner is visible; `partner_credit_warning == ''` and `credit_limit_warning_level` is falsy
+
+#### AC-ERROR-1: Warning is not silently suppressed for users lacking accounting access rights
+**Priority**: MUST
+**Given** a Sales-only user who is NOT a member of `account.group_account_invoice` or `account.group_account_readonly` (so `partner.credit`, `credit_to_invoice`, and `credit_limit` are access-restricted fields for them)
+**When** they view a Sale Order for a customer over/approaching the credit limit
+**Then** the correct-tier banner still renders (compute logic reads these fields via `.sudo()`, matching the existing core pattern at `sale_order.py:779`) — the warning is never silently blank due to the viewing user's access rights
+
+**AC-ASYNC**: Not applicable — the compute is synchronous (ORM `@api.depends` recompute on save/onchange), not an async operation; there is no intermediate/pending state to make observable.
+
+### Scope Boundaries
+
+- **In scope**:
+  - A new addon `addons/sale_credit_limit_warning/` extending `sale.order` only.
+  - Two-tier (yellow/red) banner on the Sale Order form, replacing the single-tier core banner's view placement.
+  - Message breakdown showing credit limit, current outstanding receivables, and this order's contribution.
+  - Reuse of all existing core fields/config (`account_use_credit_limit`, `credit_limit`, `credit`, `credit_to_invoice`) — no new settings UI, no new partner-facing fields.
+- **Out of scope**:
+  - Blocking/preventing order confirmation — this remains purely informational, matching the existing core `partner_credit_warning` behavior (never raises `UserError`).
+  - Any change to `account.move` / customer invoices — core's invoice-side banner (`addons/account/views/account_move_views.xml:840-841`) is untouched; task description scopes this to the Sale Order form only.
+  - Any change to `res.config.settings` or how `account_use_credit_limit` / `credit_limit` are configured.
+  - Multi-company edge cases beyond what core's own `with_company(order.company_id)` already handles.
+  - Extending the banner to order states other than `draft`/`sent` (confirmed/`sale` orders) — follows the existing core gate at `sale_order.py:775`.
+- **Dependencies**: `sale` and `account` modules (both already present in this codebase; no new third-party dependency).
+- **NFR implications**: None beyond existing core precedent — computed field is non-stored (`store=False`), recomputed per-record on demand; no additional query load beyond what core's own `partner_credit_warning` already performs (same `res.partner` fields, same order fields).
+
+**Design decisions made** (resolved here since Level 2 skips the creative phase — flagged as MEDIUM confidence, easy to revisit at build time without restructuring):
+1. 80% boundary is inclusive (`>= 0.8 * limit` → warning); the >100% boundary is exclusive on the danger side (`total_exposure > limit` → danger; `== limit` stays in the warning tier). Task description says "yellow at 80%, red over 100%" but doesn't specify inclusive/exclusive edges.
+2. Banner state gated on `order.state in ('draft', 'sent')`, following the existing core gate rather than introducing a new one — task description doesn't specify order state scope.
+3. `credit_limit_warning_level` has no explicit `'none'` selection value; a falsy value hides both banner divs. This avoids needing a third dummy option purely for view logic.
+4. Both the yellow and red banners reuse the single `partner_credit_warning` text field (only the lead sentence differs internally); the view distinguishes color via two divs bound to `credit_limit_warning_level`, not via separate text fields.
 
 ## Test Strategy
 
 ### Approach
-- **Emphasis**: [unit | integration | E2E | balanced — override systemPatterns.md default if needed]
-- **Target test count**: [N total across all phases — justify if >20]
+- **Emphasis**: Integration — matches systemPatterns.md's noted preference for `TransactionCase` integration-style tests over isolated unit tests, since the logic is expressed through ORM computed fields.
+- **Target test count**: 9 across both phases.
 
 ### File Organization
-- **New test files**: [list files to create and what they cover]
-- **Extend existing**: [list existing test files to add tests to, rather than creating new ones]
+- **New test files**: `addons/sale_credit_limit_warning/tests/test_sale_order_credit_warning.py` — all compute/threshold/view-gating behavior for this feature.
+- **Extend existing**: None — this is a new addon with no prior tests to extend.
 
 ### What NOT to Test
-- [Thing] — [reason: covered by type system / existing tests / framework / out of scope]
+- Core `_build_credit_warning_message` formatting internals (currency rounding, `formatLang` behavior) — already covered by Odoo core's own test suite (`addons/account/tests/`); out of scope to re-verify upstream behavior.
+- View rendering pixel/CSS correctness — Odoo's QWeb/OWL rendering pipeline is framework-level; verified instead by asserting the correct `credit_limit_warning_level` value drives the correct `invisible` condition (a `TransactionCase` field-value assertion, not a browser test).
 
 ### Per-Phase Test Guidance
-- Phase 1: [N tests — what behaviors to verify]
-- Phase 2: [N tests — what behaviors to verify]
+- Phase 1: 7 tests — `_compute_partner_credit_warning` override: (1) no `credit_limit` set → no banner, (2) exposure well within limit (<80%) → no banner, (3) exposure exactly at 80% → warning tier, (4) exposure between 80-100% → warning tier, (5) exposure exactly at 100% → still warning (not danger), (6) exposure over 100% → danger tier, (7) `account_use_credit_limit` disabled on company → no banner even when over limit.
+- Phase 2: 2 tests — (1) order not in `draft`/`sent` state (e.g. `sale`) → no banner regardless of exposure, (2) user without `account.group_account_invoice`/`account.group_account_readonly` still sees the correct-tier banner (verifies the `.sudo()` read).
 
 ## Implementation Roadmap
 
@@ -70,27 +174,35 @@ Add a customer credit limit warning to the Sale Order form. The warning is a com
   Organization Patterns / techContext.md → Source extensions. This removes the
   extension from being an ad-hoc build-time guess. Use "extend" for files modified.
 -->
-- [ ] [e.g., `frontend/src/hooks/useFeedbackSubmitMutation.ts` — submit mutation hook]
-- [ ] [e.g., `frontend/src/components/FeedbackWidget.tsx` — widget]
+- [ ] `addons/sale_credit_limit_warning/__manifest__.py` — module manifest, `depends: ['sale', 'account']`
+- [ ] `addons/sale_credit_limit_warning/__init__.py` — imports `models`
+- [ ] `addons/sale_credit_limit_warning/models/__init__.py` — imports `sale_order`
+- [ ] `addons/sale_credit_limit_warning/models/sale_order.py` — `_inherit = 'sale.order'`: new `credit_limit_warning_level` Selection field + `_compute_partner_credit_warning` override (threshold/message logic, `.sudo()` reads)
+- [ ] `addons/sale_credit_limit_warning/views/sale_order_views.xml` — inherits `sale.view_order_form`, xpaths the existing single alert `<div>` to two tier-gated divs
+- [ ] `addons/sale_credit_limit_warning/tests/__init__.py` — imports test module
+- [ ] `addons/sale_credit_limit_warning/tests/test_sale_order_credit_warning.py` — `TransactionCase` tests per Test Strategy above
 
 ### Phases
-- [ ] Phase 1: [phase name]
-- [ ] Phase 2: [phase name]
+- [ ] Phase 1: Module scaffold + compute logic — manifest, `__init__` files, `models/sale_order.py` (field + compute override), 7 compute-logic tests (all pass with `odoo-bin --test-enable -i sale_credit_limit_warning`)
+- [ ] Phase 2: View integration + access-rights coverage — `views/sale_order_views.xml` xpath replacement, remaining 2 tests (order-state gate, non-accounting-user access), manual verification in the running Docker Odoo instance (Sales app → Quotation → set an over-limit customer → confirm banner renders correctly)
 
 ## Creative Phases
 
-- [ ] [Architecture | User Journey | UI/UX | Algorithm] design → pending
+- [ ] Not required — Level 2, spec approved with all fields at HIGH confidence except two explicitly-resolved MEDIUM-confidence design decisions (boundary inclusivity, order-state gate) documented under Scope Boundaries.
 
 ---
 
 ## Execution State
 
 **Build Status**: IDLE
-**Last Completed**: N/A
+**Current Phase**: BUILD
+**Last Completed**: Planning (Spec Writer Agent + taxonomy lint CLEAN + human-approved spec + implementation roadmap)
 **Can Resume**: NO
 
 ### Active Sub-Agents
 (none)
 
 ### Completed Steps
-(none)
+- Spec Writer Agent (Sonnet) — Specification section, taxonomy lint CLEAN
+- Human review — Approved as-is
+- Implementation plan — Test Strategy + Implementation Roadmap (2 phases, 9 tests)
