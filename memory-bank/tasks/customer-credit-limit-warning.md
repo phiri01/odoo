@@ -183,7 +183,7 @@ All monetary figures formatted via `formatLang` in the company currency, matchin
 - [ ] `addons/sale_credit_limit_warning/tests/test_sale_order_credit_warning.py` — `TransactionCase` tests per Test Strategy above
 
 ### Phases
-- [ ] Phase 1: Module scaffold + compute logic — manifest, `__init__` files, `models/sale_order.py` (field + compute override), 7 compute-logic tests (all pass with `odoo-bin --test-enable -i sale_credit_limit_warning`)
+- [x] Phase 1: Module scaffold + compute logic — manifest, `__init__` files, `models/sale_order.py` (field + compute override), 8 compute-logic tests (all pass with `odoo-bin --test-enable -i sale_credit_limit_warning`)
 - [ ] Phase 2: View integration + access-rights coverage — `views/sale_order_views.xml` xpath replacement, remaining 2 tests (order-state gate, non-accounting-user access), manual verification in the running Docker Odoo instance (Sales app → Quotation → set an over-limit customer → confirm banner renders correctly)
 
 ## Creative Phases
@@ -196,8 +196,11 @@ All monetary figures formatted via `formatLang` in the company currency, matchin
 
 **Build Status**: IDLE
 **Current Phase**: BUILD
-**Last Completed**: Planning (Spec Writer Agent + taxonomy lint CLEAN + human-approved spec + implementation roadmap)
-**Can Resume**: NO
+**Phase Number**: 1 of 2
+**Is Multi-Phase**: YES
+**Last Completed**: Phase 1: Module scaffold + compute logic (TDD → code review → fix → verify → commit)
+**Can Resume**: YES
+**Resume From**: Phase 2 (View integration + access-rights coverage)
 
 ### Active Sub-Agents
 (none)
@@ -206,3 +209,12 @@ All monetary figures formatted via `formatLang` in the company currency, matchin
 - Spec Writer Agent (Sonnet) — Specification section, taxonomy lint CLEAN
 - Human review — Approved as-is
 - Implementation plan — Test Strategy + Implementation Roadmap (2 phases, 9 tests)
+- Phase 1 TDD Agent — new addon `sale_credit_limit_warning` scaffolded; `_compute_partner_credit_warning` override (80% warning / >100% danger tiers, 3-part message); 7 compute-logic tests (RED→GREEN)
+- Phase 1 Integration Verification (bmb:build-verifier-agent + direct execution) — module's own suite: 7/7 passing (later 8/8 after fix). Full `-i sale_credit_limit_warning` dependency-suite run surfaced 2 pre-existing `addons/sale/tests/test_credit_limit.py` failures (`test_credit_limit_access`, `test_credit_limit_multicurrency`) confirmed as an intended, documented consequence of this feature's approved spec (Design Decision #1: 80% inclusive warning tier + redesigned 3-part message supersede core's old >100%-only single-message banner) — non-blocking, not a code defect.
+- Phase 1 Code Review — CHANGES_REQUESTED: one blocking issue (credit fields read from `order.partner_id` instead of rolled-up `order.partner_id.commercial_partner_id`, silently under-reporting exposure for child-contact orders, per core's own `test_commercial_partner_credit` pattern)
+- Phase 1 Fix (TDD Agent) — corrected to `order.partner_id.commercial_partner_id.sudo()`; added `test_commercial_partner_credit_limit_warning` (8th test); applied non-blocking suggestions (`_CREDIT_WARNING_THRESHOLD_RATIO` constant, field `help=`). Verified via real RED (1 failed for the right reason) → GREEN (0 failed of 8 tests) execution in the live `odoo-odoo-1` container.
+- Documentation Agent — reviewed; no memory-bank doc changes needed (routine application of the already-documented "Extend, don't modify" pattern, no new tech/dependency)
+
+### Guard & Recovery Log
+- Phase 1: Step 7 integration verification via `bmb:build-verifier-agent` initially FAILed with "invalid module names, ignored: sale_credit_limit_warning" — root-caused to a stale `odoo-odoo` Docker image (built 2026-08-18, before this module existed) being used by `docker compose run`, which does not auto-rebuild. Recovery: found the already-running `odoo-odoo-1` container had the current module content live-synced (via `docker compose watch` / prior `docker cp`); re-ran tests directly against that container instead of rebuilding the (very slow, ~420MB context, sandbox-constrained) image. Module suite passed 7/7 (later 8/8 post-fix) via real execution.
+- Phase 1: Code-review blocking finding (commercial_partner_id rollup) → Recovery Ladder not needed (not an artifact-loss case) — routed back to TDD Agent for a standard fix-and-reverify cycle per Steps 3→7→8. Fixed, tested (RED→GREEN, real execution), re-confirmed clean.
