@@ -3,7 +3,7 @@ version: next
 status: planned
 priority: medium
 complexity: 2
-linked_tasks: []
+linked_tasks: [customer-credit-limit-warning]
 created: 2026-08-26
 ---
 
