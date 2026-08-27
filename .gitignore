@@ -54,3 +54,4 @@ package.json
 
 # Banyan Memory Bank
 memory-bank/.local/
+.auth/
