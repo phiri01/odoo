@@ -12,7 +12,7 @@ extending the existing partner credit-limit check with an intermediate
 "approaching the limit" state.
     """,
     'depends': ['sale', 'account'],
-    'data': [],
+    'data': ['views/sale_order_views.xml'],
     'installable': True,
     'auto_install': False,
     'license': 'LGPL-3',

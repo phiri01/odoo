@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_order_form_credit_limit_warning" model="ir.ui.view">
+        <field name="name">sale.order.form.credit.limit.warning</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+            <!-- Replace core's generic credit warning div with two tier-gated divs:
+                 one for "warning" (80-100% of limit) and one for "danger" (>100%).
+                 xpath matches the original alert-warning by class and invisibility
+                 condition, then substitutes both tiers in one operation. -->
+            <xpath
+                expr="//div[hasclass('alert-warning') and @invisible=&quot;partner_credit_warning == ''&quot;]"
+                position="replace"
+            >
+                <div class="alert alert-warning" role="alert"
+                     invisible="credit_limit_warning_level != 'warning'">
+                    <field name="partner_credit_warning"/>
+                </div>
+                <div class="alert alert-danger" role="alert"
+                     invisible="credit_limit_warning_level != 'danger'">
+                    <field name="partner_credit_warning"/>
+                </div>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

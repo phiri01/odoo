@@ -113,3 +113,32 @@ class TestSaleOrderCreditWarning(TestSaleCommon):
         order = self._create_order(amount_total=1200.0)
         self.assertFalse(order.credit_limit_warning_level)
         self.assertFalse(order.partner_credit_warning)
+
+    def test_confirmed_order_no_banner(self):
+        """A confirmed order (state 'sale') must show no banner even when
+        exposure is well over the credit limit - the warning is only
+        relevant while the order is still a quotation (draft/sent)."""
+        self.partner_a.credit_limit = 1000.0
+        order = self._create_order(amount_total=1200.0)
+        order.action_confirm()
+        self.assertEqual(order.state, 'sale')
+        self.assertFalse(order.credit_limit_warning_level)
+        self.assertFalse(order.partner_credit_warning)
+
+    def test_non_accounting_user_still_sees_banner(self):
+        """A plain Sales user (no Invoicing/Accounting group membership)
+        must still see the correct-tier banner - the model's sudo() read of
+        the commercial partner's credit fields must not be silently blanked
+        out by the acting user's own access rights."""
+        salesman = self.company_data['default_user_salesman']
+        self.assertFalse(
+            salesman.has_group('account.group_account_invoice')
+            or salesman.has_group('account.group_account_readonly'),
+            "Test setup assumption violated: salesman must not hold an "
+            "Invoicing/Accounting group",
+        )
+        self.partner_a.credit_limit = 1000.0
+        order = self._create_order(amount_total=1200.0)
+        order_as_salesman = order.with_user(salesman)
+        self.assertEqual(order_as_salesman.credit_limit_warning_level, 'danger')
+        self.assertTrue(order_as_salesman.partner_credit_warning)
