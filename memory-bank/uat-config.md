@@ -37,8 +37,8 @@ Each row maps a persona role discovered in `productBrief.md` → a test account 
 
 | Role          | Test Account                | Auth Reference    |
 |---------------|------------------------------|--------------------|
-| sales_user    | rphilyaw@banyansoftware.com | $TEST_SALES_PW     |
-| accountant    | rphilyaw@banyansoftware.com | $TEST_ACCOUNTANT_PW |
+| sales_user    | test@banyansoftware.com     | $TEST_SALES_PW     |
+| accountant    | test1@banyansoftware.com    | $TEST_ACCOUNTANT_PW |
 | administrator | rphilyaw@banyansoftware.com | $TEST_ADMIN_PW     |
 
 ## Viewports
