@@ -2,13 +2,13 @@
 slug: customer-credit-limit-warning
 legacy_id:
 feature: customer-credit-limit-warning
-status: BUILD_COMPLETE
+status: UAT_PASS
 ---
 
 # customer-credit-limit-warning: Customer Credit Limit Warning
 
 **Complexity**: Level 2
-**Status**: BUILD_COMPLETE
+**Status**: UAT_PASS
 **Roadmap**: customer-credit-limit-warning
 **Branch**: feature/customer-credit-limit-warning
 **Worktree**: N/A (working tree is the checkout itself; no separate worktree created)
@@ -194,18 +194,19 @@ All monetary figures formatted via `formatLang` in the company currency, matchin
 
 ## Execution State
 
-**Build Status**: COMPLETE
-**Current Phase**: BUILD
+**Build Status**: IDLE
+**Current Phase**: UAT (PASS)
 **Phase Number**: 2 of 2
 **Is Multi-Phase**: YES
-**Last Completed**: Phase 2: View integration + access-rights coverage (TDD → verify → code review → documentation → commit)
+**Last Completed**: UAT run 20260828-1424 — sections happy,mobile — PASS_WITH_RECOMMENDATIONS (Required=0, Recommended=1). Report: memory-bank/uat/uat-customer-credit-limit-warning.md. E2E spec: memory-bank/uat/spec-customer-credit-limit-warning-e2e.md
 **Can Resume**: NO
-**Resume From**: N/A — all phases complete; next is /bmb:reflect
+**Resume From**: N/A — UAT passed; next is /bmb:build to implement the E2E spec (or /bmb:uat --sections negatives,errors for full journey coverage), then /bmb:reflect
 
 ### Active Sub-Agents
 (none)
 
 ### Completed Steps
+- UAT Orchestrator — installed `sale_credit_limit_warning` into the dev DB (was uninstalled despite BUILD_COMPLETE status), walked happy+mobile sections as Administrator (superset of accountant persona), confirmed AC-ENTRY-1/AC-HAPPY-1/AC-HAPPY-2/AC-HAPPY-3a via DOM `role="alert"` class assertions at desktop and 375x667 viewports. One Recommended finding: journey doc's "unset/0" precondition needs revision (`ir.default` fallback makes credit_limit=1.0 for any partner without an explicit override); provisioned Acme Corporation (id 10) with explicit credit_limit=0 as the durable control-case fixture.
 - Spec Writer Agent (Sonnet) — Specification section, taxonomy lint CLEAN
 - Human review — Approved as-is
 - Implementation plan — Test Strategy + Implementation Roadmap (2 phases, 9 tests)
