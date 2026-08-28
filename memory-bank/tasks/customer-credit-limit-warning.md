@@ -2,13 +2,13 @@
 slug: customer-credit-limit-warning
 legacy_id:
 feature: customer-credit-limit-warning
-status: UAT_PASS
+status: BUILD_COMPLETE
 ---
 
 # customer-credit-limit-warning: Customer Credit Limit Warning
 
 **Complexity**: Level 2
-**Status**: UAT_PASS
+**Status**: BUILD_COMPLETE
 **Roadmap**: customer-credit-limit-warning
 **Branch**: feature/customer-credit-limit-warning
 **Worktree**: N/A (working tree is the checkout itself; no separate worktree created)
@@ -185,6 +185,7 @@ All monetary figures formatted via `formatLang` in the company currency, matchin
 ### Phases
 - [x] Phase 1: Module scaffold + compute logic — manifest, `__init__` files, `models/sale_order.py` (field + compute override), 8 compute-logic tests (all pass with `odoo-bin --test-enable -i sale_credit_limit_warning`)
 - [x] Phase 2: View integration + access-rights coverage — `views/sale_order_views.xml` xpath replacement, remaining 2 tests (order-state gate, non-accounting-user access), 10/10 module tests passing
+- [x] Phase 3: E2E spec implementation (post-UAT) — extended `tests/test_sale_order_credit_warning.py` with the 3 `TransactionCase` tests from `memory-bank/uat/spec-customer-credit-limit-warning-e2e.md` § Test Cases to Implement (warning-tier via UI-equivalent fixture values, danger-tier via UI-equivalent fixture values, explicit-zero-limit no-banner control case); the spec's 4th case (mobile viewport) is explicitly out of scope for a Python `TransactionCase` and was not implemented; 13/13 module tests passing
 
 ## Creative Phases
 
@@ -194,13 +195,18 @@ All monetary figures formatted via `formatLang` in the company currency, matchin
 
 ## Execution State
 
-**Build Status**: IDLE
-**Current Phase**: UAT (PASS)
-**Phase Number**: 2 of 2
+**Build Status**: COMPLETE
+**Current Phase**: Phase 3: E2E spec implementation (post-UAT) — COMPLETE (all phases done)
+**Phase Number**: 3 of 3
 **Is Multi-Phase**: YES
-**Last Completed**: UAT run 20260828-1424 — sections happy,mobile — PASS_WITH_RECOMMENDATIONS (Required=0, Recommended=1). Report: memory-bank/uat/uat-customer-credit-limit-warning.md. E2E spec: memory-bank/uat/spec-customer-credit-limit-warning-e2e.md
+**Build Started**: 2026-08-28
+**Last Completed**: Phase 3 committed and pushed to feature/customer-credit-limit-warning — 13/13 module tests passing, lint clean on all Phase 3 additions, code review APPROVED, no memory-bank doc changes needed.
 **Can Resume**: NO
-**Resume From**: N/A — UAT passed; next is /bmb:build to implement the E2E spec (or /bmb:uat --sections negatives,errors for full journey coverage), then /bmb:reflect
+**Resume From**: N/A — all 3 implementation phases complete. Next: /bmb:reflect customer-credit-limit-warning, then /bmb:archive
+
+### Current Build Step
+**Step**: Step 11 - Phase Git Completion
+**Status**: COMPLETE
 
 ### Active Sub-Agents
 (none)
@@ -219,8 +225,14 @@ All monetary figures formatted via `formatLang` in the company currency, matchin
 - Phase 2 Integration Verification (bmb:build-verifier-agent) — module's own suite: 10/10 passing; dependency suite: no new regressions beyond Phase 1's already-documented pre-existing core failures — PASS
 - Phase 2 Code Review — APPROVED, 0 blocking issues (1 non-blocking hardening suggestion: anchor the view xpath on the child `<field>` element instead of the exact `invisible` string, for extra resilience to cosmetic core changes — not applied, optional)
 - Phase 2 Documentation Agent — reviewed; no memory-bank doc changes needed (XML view inheritance is an already-documented standard pattern); added one clarifying inline XML comment to `views/sale_order_views.xml`
+- Phase 3 TDD Agent — extended `tests/test_sale_order_credit_warning.py` with 3 new tests codifying the UAT E2E spec (`memory-bank/uat/spec-customer-credit-limit-warning-e2e.md`): `test_e2e_warning_tier_via_ui_equivalent_values`, `test_e2e_danger_tier_via_ui_equivalent_values`, `test_e2e_no_banner_explicit_zero_limit`; widened `_create_order(amount_total, partner=None)` helper (behavior-preserving for all 10 prior call sites); 13/13 passing on first real execution (spec case 4, mobile viewport, deliberately not implemented — out of scope for `TransactionCase`)
+- Phase 3 Integration Verification (bmb:build-verifier-agent) — tests PASS 13/13; build (module install) PASS; lint FAIL — 9 new E501 line-too-long violations in the added test methods (13 other violations pre-existing from Phases 1-2, out of scope)
+- Phase 3 Lint Fix (orchestrator, mechanical) — rewrapped the 9 offending lines to fit the 79-char flake8 limit; re-ran the module suite directly (13/13 still passing) and flake8 on this phase's diff (0 new violations; only the 2 pre-existing Phase-1 long lines at 57/111 remain, unrelated to this phase)
+- Phase 3 Code Review — APPROVED, 0 blocking issues (1 non-blocking note affirming the zero-limit test doesn't over-specify; 1 optional dedup suggestion for the warning/danger tests' shared exposure-booking setup, not applied — consistent with existing file style)
+- Phase 3 Documentation Agent — reviewed; no memory-bank doc changes needed (test-only phase, no new tech/pattern/capability; inline comments already adequate)
 
 ### Guard & Recovery Log
 - Phase 1: Step 7 integration verification via `bmb:build-verifier-agent` initially FAILed with "invalid module names, ignored: sale_credit_limit_warning" — root-caused to a stale `odoo-odoo` Docker image (built 2026-08-18, before this module existed) being used by `docker compose run`, which does not auto-rebuild. Recovery: found the already-running `odoo-odoo-1` container had the current module content live-synced (via `docker compose watch` / prior `docker cp`); re-ran tests directly against that container instead of rebuilding the (very slow, ~420MB context, sandbox-constrained) image. Module suite passed 7/7 (later 8/8 post-fix) via real execution.
 - Phase 1: Code-review blocking finding (commercial_partner_id rollup) → Recovery Ladder not needed (not an artifact-loss case) — routed back to TDD Agent for a standard fix-and-reverify cycle per Steps 3→7→8. Fixed, tested (RED→GREEN, real execution), re-confirmed clean.
 - Phase 2: No guard failures. `docker compose watch` was found not actually running (plain `docker compose up` only); TDD/verifier agents used `docker cp` to push changed files into the running `odoo-odoo-1` container before each test run instead.
+- Phase 3: Step 7 guard FAIL (lint: 9 new E501 violations in the added test methods) → recovery: mechanical line-rewrap fix (no ladder needed — not an artifact-loss case), re-verified real test execution (13/13) + flake8 (0 new violations) directly → PASS. Root cause: TDD agent's assertion/docstring lines exceeded the 79-char flake8 limit configured in `setup.cfg`; no memory-bank guidance gap to fix (the limit is discoverable in `setup.cfg`, agent simply didn't check it before writing).

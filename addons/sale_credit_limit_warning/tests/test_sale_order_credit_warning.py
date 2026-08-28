@@ -2,6 +2,7 @@
 
 from odoo.fields import Command
 from odoo.tests import tagged
+from odoo.tools import formatLang
 
 from odoo.addons.sale.tests.common import TestSaleCommon
 
@@ -14,11 +15,11 @@ class TestSaleOrderCreditWarning(TestSaleCommon):
         super().setUpClass()
         cls.env.company.account_use_credit_limit = True
 
-    def _create_order(self, amount_total):
+    def _create_order(self, amount_total, partner=None):
         """Create a draft sale.order whose amount_total equals `amount_total`
         by adding a single untaxed order line with that price."""
         return self.env['sale.order'].create({
-            'partner_id': self.partner_a.id,
+            'partner_id': (partner or self.partner_a).id,
             'order_line': [Command.create({
                 'product_id': self.product_a.id,
                 'product_uom_qty': 1,
@@ -140,5 +141,95 @@ class TestSaleOrderCreditWarning(TestSaleCommon):
         self.partner_a.credit_limit = 1000.0
         order = self._create_order(amount_total=1200.0)
         order_as_salesman = order.with_user(salesman)
-        self.assertEqual(order_as_salesman.credit_limit_warning_level, 'danger')
+        self.assertEqual(
+            order_as_salesman.credit_limit_warning_level, 'danger')
         self.assertTrue(order_as_salesman.partner_credit_warning)
+
+    # -- UAT E2E spec
+    # (memory-bank/uat/spec-customer-credit-limit-warning-e2e.md) --
+    # These three cases codify the browser-verified journey from the passed
+    # /bmb:uat walk. They exercise the same compute logic as the tests above
+    # but pin the exact figures the UAT spec walked through in the UI, and
+    # assert that all three currency figures (limit / outstanding / this-order)
+    # are present in the rendered message, matching what a user would see.
+
+    def test_e2e_warning_tier_via_ui_equivalent_values(self):
+        """Partner with credit_limit=1000 and existing outstanding exposure
+        of 400 (booked via a prior confirmed-but-uninvoiced order, mirroring
+        the credit_to_invoice idiom used by
+        test_commercial_partner_credit_limit_warning above). A NEW draft
+        order totaling 510 pushes total exposure to 400 + 510 = 910, which
+        is 91% of the limit (>= 80% threshold, not over 100%) => 'warning'.
+        The message must break out all three figures (limit, outstanding,
+        this-order-amount) as formatted currency."""
+        self.partner_a.credit_limit = 1000.0
+        exposure_order = self._create_order(amount_total=400.0)
+        exposure_order.action_confirm()
+        self.assertEqual(
+            self.partner_a.credit_to_invoice, 400.0,
+            "Test setup assumption violated: exposure order should book "
+            "400 of outstanding (uninvoiced) exposure",
+        )
+
+        order = self._create_order(amount_total=510.0)
+        self.assertEqual(order.credit_limit_warning_level, 'warning')
+
+        currency = self.env.company.currency_id
+        message = order.partner_credit_warning
+        self.assertIn(
+            formatLang(self.env, 1000.0, currency_obj=currency), message)
+        self.assertIn(
+            formatLang(self.env, 400.0, currency_obj=currency), message)
+        self.assertIn(
+            formatLang(self.env, 510.0, currency_obj=currency), message)
+
+    def test_e2e_danger_tier_via_ui_equivalent_values(self):
+        """Same partner/outstanding setup as the warning-tier case above, but
+        the new order totals 680, pushing total exposure to
+        400 + 680 = 1080 > the 1000 limit => 'danger'. The message must
+        still break out all three figures."""
+        self.partner_a.credit_limit = 1000.0
+        exposure_order = self._create_order(amount_total=400.0)
+        exposure_order.action_confirm()
+        self.assertEqual(
+            self.partner_a.credit_to_invoice, 400.0,
+            "Test setup assumption violated: exposure order should book "
+            "400 of outstanding (uninvoiced) exposure",
+        )
+
+        order = self._create_order(amount_total=680.0)
+        self.assertEqual(order.credit_limit_warning_level, 'danger')
+
+        currency = self.env.company.currency_id
+        message = order.partner_credit_warning
+        self.assertIn(
+            formatLang(self.env, 1000.0, currency_obj=currency), message)
+        self.assertIn(
+            formatLang(self.env, 400.0, currency_obj=currency), message)
+        self.assertIn(
+            formatLang(self.env, 680.0, currency_obj=currency), message)
+
+    def test_e2e_no_banner_explicit_zero_limit(self):
+        """A partner with an EXPLICIT credit_limit of 0.0 (not merely unset)
+        must never show a banner, regardless of order amount. This is
+        distinct from an *unset* limit, which an ir.default fallback can
+        resolve to a non-zero value (e.g. 1.0) - the explicit-zero case must
+        be tested on its own to guard against that fallback masking a
+        regression."""
+        partner = self.env['res.partner'].create({
+            'name': "Explicit Zero Limit Partner",
+            'credit_limit': 0.0,
+        })
+        self.assertEqual(
+            partner.credit_limit, 0.0,
+            "Test setup assumption violated: credit_limit must be "
+            "explicitly 0.0, not falling back to an ir.default value",
+        )
+
+        order = self._create_order(amount_total=5000.0, partner=partner)
+        self.assertEqual(order.partner_credit_warning, '')
+        self.assertFalse(order.credit_limit_warning_level)
+
+    # Case 4 from the UAT spec (mobile-viewport rendering of the banner) is
+    # explicitly out of scope for a Python TransactionCase - it requires a
+    # real browser viewport and is left to /bmb:uat's browser walk.
